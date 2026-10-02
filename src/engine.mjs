@@ -3,28 +3,30 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { checked, shellCommand, remoteProcess } from './process.mjs';
 import { callAgent, parseObject } from './agents.mjs';
+import { teamFor, validateTeam } from './providers.mjs';
 
 const activeStates=['running','pausing','deploying','publishing'];
 export class Engine {
-  constructor(store,{agentCall=callAgent}={}) {
-    this.store=store;this.agentCall=agentCall;this.jobs=new Map();
+  constructor(store,{agentCall=callAgent,settingsProvider}={}) {
+    this.store=store;this.agentCall=agentCall;this.settingsProvider=settingsProvider;this.jobs=new Map();
     for(const r of store.list())if(activeStates.includes(r.status)){r.status='interrupted';r.error='El servidor se reinició. Revisa la actividad y reanuda explícitamente.';store.save(r);}
   }
-  settings(){return this.store.read('settings.json')}
+  settings(){return this.settingsProvider?this.settingsProvider():this.store.read('settings.json')}
   log(r,type,data={}){return this.store.event(r.id,type,data)}
   persist(r){this.syncMessages(r);this.store.save(r);this.log(r,'state',{status:r.status,phase:r.phase,taskIndex:r.taskIndex})}
   create({repository,goal,verificationCommands=[],maxTasks=12}) {
     if(typeof repository!=='string'||!repository.trim()||repository.startsWith('-'))throw new Error('Falta el repositorio (URL Git o ruta local)');
     if(typeof goal!=='string'||!goal.trim())throw new Error('Describe el objetivo del proyecto');
     if(!Array.isArray(verificationCommands)||verificationCommands.some(c=>typeof c!=='string'))throw new Error('Comandos de verificación inválidos');
-    const id=randomUUID();const r={id,repository:repository.trim(),goal:goal.trim(),verificationCommands:verificationCommands.filter(Boolean),maxTasks:Math.min(30,Math.max(1,Number(maxTasks)||12)),status:'created',phase:'prepare',taskIndex:0,repairRound:0,tasks:[],messages:[],transcript:[],steps:{},openclawSession:randomUUID(),createdAt:new Date().toISOString(),branch:`tria/${id.slice(0,8)}`};
+    const team=validateTeam(teamFor(this.settings()));
+    const id=randomUUID();const r={id,team,repository:repository.trim(),goal:goal.trim(),verificationCommands:verificationCommands.filter(Boolean),maxTasks:Math.min(30,Math.max(1,Number(maxTasks)||12)),status:'created',phase:'prepare',taskIndex:0,repairRound:0,tasks:[],messages:[],transcript:[],steps:{},openclawSession:randomUUID(),createdAt:new Date().toISOString(),branch:`tria/${id.slice(0,8)}`};
     this.store.save(r);this.log(r,'created',{repository:r.repository,goal:r.goal});return r;
   }
   start(id) {
     if(this.jobs.has(id))throw new Error('Esta ejecución ya está activa');
     const r=this.store.run(id);if(['completed','deployed'].includes(r.status))throw new Error('Crea una nueva ejecución para otro objetivo');
     // Freeze connection and policy for the duration of each job.
-    const settings=structuredClone(this.settings());const controller=new AbortController();
+    const settings=structuredClone(this.settings());r.team=validateTeam(r.team||teamFor(settings));const controller=new AbortController();
     if(r.status==='failed'){r.repairRound=0;r.finalRepairs=0;const t=r.tasks[r.taskIndex];if(t)t.repairs=0;}
     r.status='running';r.error='';this.persist(r);
     const job={controller,promise:null};this.jobs.set(id,job);
@@ -44,7 +46,7 @@ export class Engine {
   }
   context(r) {
     this.syncMessages(r);
-    return `Eres miembro de Tria, equipo Codex + Claude Code + OpenClaw dirigido por el usuario.\nOBJETIVO: ${r.goal}\nREPOSITORIO: ${r.repository}\nCOPIA DE TRABAJO: ${r.workspace}\nRAMA: ${r.branch}\nLee AGENTS.md, CLAUDE.md, README y los .md pertinentes. Inspecciona código real. No declares algo probado sin ejecutarlo. Implementa resultados funcionales; no sustituyas integraciones por mocks. No hagas push, merge, despliegue ni cambies de rama: los gestiona Tria. No accedas a las credenciales. El usuario decide los permisos en la configuración.\nINSTRUCCIONES DEL USUARIO: ${JSON.stringify(r.messages)}\nPLAN: ${JSON.stringify(r.tasks)}\nCONVERSACIÓN COMPARTIDA (últimos turnos):\n${r.transcript.slice(-10).map(t=>`${t.agent} [${t.phase}]: ${t.text.slice(-16000)}`).join('\n\n')}`;
+    return `Eres miembro de Tria, equipo ${r.team?.join(' + ')||'Codex + Claude'} con OpenClaw opcional, dirigido por el usuario.\nOBJETIVO: ${r.goal}\nREPOSITORIO: ${r.repository}\nCOPIA DE TRABAJO: ${r.workspace}\nRAMA: ${r.branch}\nLee AGENTS.md, CLAUDE.md, README y los .md pertinentes. Inspecciona código real. No declares algo probado sin ejecutarlo. Implementa resultados funcionales; no sustituyas integraciones por mocks. No hagas push, merge, despliegue ni cambies de rama: los gestiona Tria. No accedas a las credenciales. El usuario decide los permisos en la configuración.\nINSTRUCCIONES DEL USUARIO: ${JSON.stringify(r.messages)}\nPLAN: ${JSON.stringify(r.tasks)}\nCONVERSACIÓN COMPARTIDA (últimos turnos):\n${r.transcript.slice(-10).map(t=>`${t.agent} [${t.phase}]: ${t.text.slice(-16000)}`).join('\n\n')}`;
   }
   async turn(r,settings,signal,agent,instruction,structured=true) {
     const prompt=this.context(r)+'\n\nTU ENCARGO AHORA:\n'+instruction;
@@ -55,6 +57,8 @@ export class Engine {
     return structured?parseObject(text):text;
   }
   async execute(r,settings,signal) {
+    const team=r.team||['codex','claude'],lead=team[0],peer=team[1];
+    const reviewerFor=owner=>team[(team.indexOf(owner)+1)%team.length];
     if(!r.workspace) {
       // Clone into a managed directory: never take over the user's working checkout.
       r.workspace=join(this.store.dir,'workspaces',r.id);this.store.save(r);
@@ -83,12 +87,12 @@ export class Engine {
     }
     if(!r.steps.proposal) {
       r.phase='proposal';this.persist(r);
-      await this.turn(r,settings,signal,'codex','Analiza el repositorio sin modificarlo. Propón a Claude un plan concreto para construir el objetivo. Explica decisiones, dependencias, puntos discutibles y cómo verificar funcionalidad. Responde en español.',false);
+      await this.turn(r,settings,signal,lead,'Analiza el repositorio sin modificarlo. Propón al equipo un plan concreto para construir el objetivo. Explica decisiones, dependencias, puntos discutibles y cómo verificar funcionalidad. Responde en español.',false);
       r.steps.proposal=true;this.persist(r);
     }
     if(!r.steps.debate) {
       r.phase='debate';this.persist(r);
-      await this.turn(r,settings,signal,'claude','Revisa la propuesta de Codex contra el repositorio real sin modificarlo. Discute fallos, alternativas y trabajo faltante; propone el reparto de tareas entre ambos. No apruebes por cortesía. Responde a Codex en español.',false);
+      for(const agent of team.slice(1)){if(r.steps['debate_'+agent])continue;await this.turn(r,settings,signal,agent,'Revisa las propuestas anteriores contra el repositorio real sin modificarlo. Discute fallos, alternativas y trabajo faltante; propone el reparto entre los miembros del equipo. No apruebes por cortesía. Responde al equipo en español.',false);r.steps['debate_'+agent]=true;this.persist(r);}
       r.steps.debate=true;this.persist(r);
     }
     if(settings.openclaw.enabled&&!r.steps.serverDebate) {
@@ -98,8 +102,8 @@ export class Engine {
     }
     if(!r.steps.planned) {
       r.phase='plan';this.persist(r);
-      const p=await this.turn(r,settings,signal,'codex',`Resuelve las observaciones de Claude y OpenClaw. Sin editar código, acuerda un plan ejecutable de entre 1 y ${r.maxTasks} tareas ordenadas por dependencias. Cada tarea tiene un responsable codex o claude; distribuye el trabajo entre ambos. Devuelve SOLO JSON: {"summary":"...","tasks":[{"title":"...","owner":"codex","instructions":"...","acceptance":"..."}],"verificationCommands":["comando real que termina con código 0 solo si pasa"]}. Los comandos se ejecutan en ${process.platform} desde la raíz de esta copia. Incluye pruebas reales/build del proyecto, nunca echo true ni servidores que no terminan.`);
-      if(!Array.isArray(p.tasks)||!p.tasks.length||p.tasks.length>r.maxTasks||p.tasks.some(t=>!['codex','claude'].includes(t.owner)||typeof t.title!=='string'||typeof t.instructions!=='string'||typeof t.acceptance!=='string'))throw new Error('Plan inválido: faltan tareas, responsable o criterios de aceptación');
+      const p=await this.turn(r,settings,signal,lead,`Resuelve las observaciones de todos los participantes. Sin editar código, acuerda un plan ejecutable de entre 1 y ${r.maxTasks} tareas ordenadas por dependencias. Cada tarea tiene un responsable de esta lista: ${team.join(', ')}; distribuye el trabajo entre los participantes. Devuelve SOLO JSON: {"summary":"...","tasks":[{"title":"...","owner":"${lead}","instructions":"...","acceptance":"..."}],"verificationCommands":["comando real que termina con código 0 solo si pasa"]}. Los comandos se ejecutan en ${process.platform} desde la raíz de esta copia. Incluye pruebas reales/build del proyecto, nunca echo true ni servidores que no terminan.`);
+      if(!Array.isArray(p.tasks)||!p.tasks.length||p.tasks.length>r.maxTasks||p.tasks.some(t=>!team.includes(t.owner)||typeof t.title!=='string'||typeof t.instructions!=='string'||typeof t.acceptance!=='string'))throw new Error('Plan inválido: faltan tareas, responsable o criterios de aceptación');
       if(!Array.isArray(p.verificationCommands)||p.verificationCommands.some(c=>typeof c!=='string'||!c.trim()))throw new Error('El plan no contiene comandos de verificación válidos');
       if(!r.verificationCommands.length)r.verificationCommands=p.verificationCommands;
       if(!r.verificationCommands.length)throw new Error('Se necesita al menos una verificación ejecutable para poder completar el trabajo');
@@ -113,7 +117,7 @@ export class Engine {
           .then(result=>{if(result.blocked!==false)throw new Error(result.summary||'El implementador está bloqueado');t.result=result});
         await this.checkpoint(r,`Tria: ${t.title}`,signal);t.implemented=true;this.persist(r);
       }
-      r.phase='review';this.persist(r);const reviewer=t.owner==='codex'?'claude':'codex';
+      r.phase='review';this.persist(r);const reviewer=reviewerFor(t.owner);
       const review=await this.turn(r,settings,signal,reviewer,`Revisa de forma independiente la tarea ${t.id}: ${t.title}. Criterio: ${t.acceptance}. Inspecciona el código y ejecuta pruebas si hace falta. No edites. Devuelve SOLO JSON {"approved":true,"summary":"...","issues":["problemas concretos que bloquean aceptación"]}. Si faltan integración o pruebas relevantes, approved debe ser false.`);
       if(review.approved!==true||!Array.isArray(review.issues)||review.issues.length) {
         t.review=review;t.repairs=(t.repairs||0)+1;t.implemented=false;this.persist(r);
@@ -132,24 +136,24 @@ export class Engine {
       if(r.verification.every(v=>v.code===0)) {r.steps.verified=true;this.persist(r);break;}
       if(r.repairRound>=settings.maxRepairRounds)throw new Error('Las verificaciones siguen fallando. Consulta resultados y añade instrucciones para continuar.');
       r.repairRound++;r.phase='repair';this.persist(r);
-      const owner=r.repairRound%2?'claude':'codex';
+      const owner=team[r.repairRound%team.length];
       const repair=await this.turn(r,settings,signal,owner,`Corrige estos fallos reales sin desactivar ni debilitar las pruebas: ${JSON.stringify(r.verification)}. Devuelve SOLO JSON {"summary":"...","blocked":false}.`);
       if(repair.blocked!==false)throw new Error(repair.summary||'Reparación bloqueada');
       await this.checkpoint(r,'Tria: repair verification',signal);
     }
     // Final independent reviews are after fixes, never before the tested revision.
     if(!r.verifiedTree){await this.checkpoint(r,'Tria: verification checkpoint',signal);r.verifiedTree=(await this.git(r,['rev-parse','HEAD'],signal)).stdout.trim();this.persist(r);}
-    for(const agent of ['codex','claude'])if(!r.steps[`final_${agent}`]) {
+    for(const agent of team)if(!r.steps[`final_${agent}`]) {
       r.phase='final-review';this.persist(r);
       const v=await this.turn(r,settings,signal,agent,`Audita el resultado completo contra el objetivo del usuario, no solo el plan. No edites. Verificaciones ejecutadas por Tria: ${JSON.stringify(r.verification)}. Devuelve SOLO JSON {"approved":true,"summary":"...","issues":[]}. Si falta funcionalidad, no apruebes.`);
       const currentHead=(await this.git(r,['rev-parse','HEAD'],signal)).stdout.trim();
       const currentChanges=(await this.git(r,['status','--porcelain'],signal)).stdout.trim();
-      if(currentHead!==r.verifiedTree||currentChanges){r.steps.verified=false;r.steps.final_codex=false;r.steps.final_claude=false;r.verifiedTree=null;this.persist(r);throw new Error('El código cambió durante la auditoría. Reanuda para volver a ejecutar las verificaciones sobre esos cambios.');}
+      if(currentHead!==r.verifiedTree||currentChanges){r.steps.verified=false;for(const member of team)r.steps['final_'+member]=false;r.verifiedTree=null;this.persist(r);throw new Error('El código cambió durante la auditoría. Reanuda para volver a ejecutar las verificaciones sobre esos cambios.');}
       if(v.approved!==true||!Array.isArray(v.issues)||v.issues.length) {
         if(r.finalRepairs>=settings.maxRepairRounds)throw new Error(`Auditoría final de ${agent}: ${v.summary}`);
         r.finalRepairs=(r.finalRepairs||0)+1;
-        r.tasks.push({id:r.tasks.length+1,title:`Correcciones de auditoría (${agent})`,owner:agent==='codex'?'claude':'codex',instructions:JSON.stringify(v),acceptance:'Resolver los hallazgos de la auditoría sin eliminar comprobaciones',status:'pending'});
-        r.steps.verified=false;r.steps.final_codex=false;r.steps.final_claude=false;r.verifiedTree=null;this.persist(r);return this.execute(r,settings,signal);
+        r.tasks.push({id:r.tasks.length+1,title:`Correcciones de auditoría (${agent})`,owner:reviewerFor(agent),instructions:JSON.stringify(v),acceptance:'Resolver los hallazgos de la auditoría sin eliminar comprobaciones',status:'pending'});
+        r.steps.verified=false;for(const member of team)r.steps['final_'+member]=false;r.verifiedTree=null;this.persist(r);return this.execute(r,settings,signal);
       }
       r.steps[`final_${agent}`]=true;this.persist(r);
     }

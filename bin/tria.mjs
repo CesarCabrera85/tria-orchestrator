@@ -10,7 +10,7 @@ const args=process.argv.slice(2),command=args[0]||'start';
 const option=(name,fallback)=>{const i=args.indexOf('--'+name);if(i<0)return fallback;if(!args[i+1]||args[i+1].startsWith('--'))throw new Error(`Falta --${name}`);return args[i+1]};
 const dir=resolve(option('data',process.env.TRIA_HOME||`${homedir()}/.tria`));
 if(command==='help'||args.includes('--help')){
- console.log(`Tria 0.1.0 — Codex + Claude Code + OpenClaw\n\ntria start [--port 4310] [--host 127.0.0.1] [--data PATH]\ntria doctor [--data PATH]\ntria handoff\n\nTRIA_TOKEN: token opcional para acceder al panel. TRIA_HOME: directorio de datos.\nLas cuentas de los agentes se autentican en sus CLI. No necesita API keys.`);
+ console.log(`Tria 0.2.0 — Codex + Claude + Gemini + Kimi + OpenClaw\n\ntria start [--port 4310] [--host 127.0.0.1] [--data PATH]\ntria doctor [--data PATH]\ntria handoff\n\nTRIA_TOKEN: token opcional para acceder al panel. TRIA_HOME: directorio de datos.\nLas cuentas de los agentes se autentican en sus CLI. No necesita API keys.`);
 }else if(command==='handoff')console.log(readFileSync(new URL('../docs/PARA_OPENCLAW.md',import.meta.url),'utf8'));
 else if(command==='doctor'){const store=new Store(dir);console.log(JSON.stringify(await doctor(store.read('settings.json',defaultSettings())),null,2));}
 else if(command==='start'){

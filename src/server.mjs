@@ -7,16 +7,18 @@ import { Store } from './store.mjs';
 import { Engine } from './engine.mjs';
 import { defaultSettings } from './agents.mjs';
 import { runProcess, remoteProcess, subscriptionEnv } from './process.mjs';
+import { providerIds, teamFor, validateTeam, loginProvider, probeProvider } from './providers.mjs';
 
 const publicDir=fileURLToPath(new URL('../public/',import.meta.url));
 function json(res,code,data){res.writeHead(code,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));}
 async function body(req){let s='';for await(const chunk of req){s+=chunk;if(s.length>1024*1024)throw new Error('Petición demasiado grande')}return s?JSON.parse(s):{};}
 function same(a,b){const x=Buffer.from(a||''),y=Buffer.from(b||'');return x.length===y.length&&timingSafeEqual(x,y)}
 
-export async function doctor(settings) {
-  const results=await Promise.all(['codex','claude'].map(async agent=>{
-    const cfg=settings[agent];try{
+export async function doctor(settings,agents=providerIds) {
+  const results=await Promise.all(agents.map(async agent=>{
+    const cfg=settings[agent]||defaultSettings()[agent];try{
       const version=await runProcess(cfg.command,['--version'],{timeout:15000,env:subscriptionEnv()});
+      if(['gemini','kimi'].includes(agent))return {agent,command:cfg.command,installed:version.code===0,version:version.stdout.trim(),loggedIn:null,detail:'Pulsa Probar cuenta para comprobar una respuesta real.'};
       const auth=await runProcess(cfg.command,agent==='codex'?['login','status']:['auth','status'],{timeout:15000,env:subscriptionEnv()});
       let loggedIn=auth.code===0; if(agent==='claude'){try{loggedIn=JSON.parse(auth.stdout).loggedIn===true}catch{loggedIn=false}}
       return {agent,command:cfg.command,installed:version.code===0,version:version.stdout.trim(),loggedIn,detail:(auth.stderr||auth.stdout).trim()};
@@ -26,7 +28,12 @@ export async function doctor(settings) {
 
 export async function createServer({dir,host='127.0.0.1',port=4310,token='',agentCall}={}) {
   const store=new Store(dir);if(!store.read('settings.json'))store.write('settings.json',defaultSettings());
-  const engine=new Engine(store,{agentCall}); const clients=new Set();
+  const defaults=defaultSettings(),saved=store.read('settings.json');
+  for(const id of providerIds)saved[id]={...defaults[id],...saved[id]};
+  saved.team=validateTeam(teamFor(saved));delete saved.ssh.password;store.write('settings.json',saved);
+  let sshPassword='';
+  const publicSettings=()=>{const s=store.read('settings.json');delete s.ssh.password;s.ssh.hasPassword=!!sshPassword;return s;};
+  const engine=new Engine(store,{agentCall,settingsProvider:()=>{const s=store.read('settings.json');s.ssh.password=sshPassword;return s}}); const clients=new Set();
   const server=http.createServer(async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
     try {
@@ -39,16 +46,27 @@ export async function createServer({dir,host='127.0.0.1',port=4310,token='',agen
         }
         if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)return json(res,403,{error:'Origen distinto al de esta instancia'});
         if(!['GET','HEAD'].includes(req.method)&&!req.headers['content-type']?.startsWith('application/json'))return json(res,415,{error:'Se requiere application/json'});
-        if(path==='/api/settings'&&req.method==='GET')return json(res,200,engine.settings());
+        if(path==='/api/settings'&&req.method==='GET')return json(res,200,publicSettings());
         if(path==='/api/settings'&&req.method==='PUT') {
           if(engine.jobs.size)throw new Error('Detén las ejecuciones antes de cambiar conexiones');
           const value=await body(req),prev=engine.settings();
           for(const agent of ['codex','claude'])if(!value[agent]||typeof value[agent].command!=='string'||!value[agent].command.trim()||!['full','workspace'].includes(value[agent].access))throw new Error('Configuración de agentes inválida');
+          for(const agent of ['gemini','kimi']){value[agent]={...prev[agent],...value[agent]};if(typeof value[agent].command!=='string'||!value[agent].command.trim())throw new Error('Falta el ejecutable de '+agent);}
+          value.team=validateTeam(value.team||prev.team);
           if(!value.ssh||typeof value.ssh.target!=='string'||!value.openclaw||typeof value.openclaw.enabled!=='boolean')throw new Error('Configuración SSH/OpenClaw inválida');
           value.turnTimeoutMinutes=Math.min(180,Math.max(1,Number(value.turnTimeoutMinutes)||20));value.maxRepairRounds=Math.min(10,Math.max(0,Number(value.maxRepairRounds)||0));
-          store.write('settings.json',{...prev,...value});return json(res,200,{ok:true});
+          if(value.ssh.password!==undefined&&typeof value.ssh.password!=='string')throw new Error('Contraseña SSH inválida');
+          if(value.ssh.forgetPassword)sshPassword='';else if(value.ssh.password)sshPassword=value.ssh.password;
+          delete value.ssh.password;delete value.ssh.hasPassword;delete value.ssh.forgetPassword;
+          store.write('settings.json',{...prev,...value});return json(res,200,{ok:true,hasPassword:!!sshPassword});
         }
         if(path==='/api/doctor'&&req.method==='GET')return json(res,200,await doctor(engine.settings()));
+        const providerRoute=path.match(/^\/api\/providers\/(codex|claude|gemini|kimi)\/(login|probe)$/);
+        if(providerRoute&&req.method==='POST'){
+          if(engine.jobs.size)throw new Error('Detén las ejecuciones antes de cambiar o comprobar cuentas.');
+          const [,id,action]=providerRoute;
+          return json(res,200,await(action==='login'?loginProvider(id,engine.settings()):probeProvider(id,engine.settings())));
+        }
         if(path==='/api/ssh/check'&&req.method==='POST') {
           const settings=engine.settings();const r=await remoteProcess(settings.ssh,settings.ssh.node||'node',['-e','console.log(JSON.stringify({hostname:require("os").hostname(),platform:process.platform,node:process.version,cwd:process.cwd()}))'],{timeout:20000,remoteCwd:settings.ssh.repoPath||undefined});
           return json(res,r.code===0?200:400,r.code===0?{ok:true,detail:r.stdout}:{error:r.stderr||r.stdout});
@@ -71,7 +89,7 @@ export async function createServer({dir,host='127.0.0.1',port=4310,token='',agen
           if(req.method==='POST'){
             const data=await body(req);
             if(action==='start'){
-              if(!agentCall){const health=await doctor(engine.settings());const missing=health.filter(a=>!a.installed||!a.loggedIn);if(missing.length)throw new Error('Inicia sesión en los CLI antes de comenzar: '+missing.map(a=>a.agent).join(', '));}
+              if(!agentCall){const cfg=engine.settings(),team=store.run(id).team||teamFor(cfg),health=await doctor(cfg,team);const missing=health.filter(a=>!a.installed||a.loggedIn===false);if(missing.length)throw new Error('Inicia sesión en los CLI antes de comenzar: '+missing.map(a=>a.agent).join(', '));for(const a of health)if(a.loggedIn===null)await probeProvider(a.agent,cfg);}
               return json(res,202,engine.start(id));
             }
             if(action==='pause')return json(res,202,engine.pause(id));

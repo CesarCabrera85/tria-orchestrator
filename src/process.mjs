@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { passwordConnectionOptions, runPasswordSSH } from './ssh-password.mjs';
 
 export function discover(name) {
   const home=homedir();
@@ -9,7 +10,8 @@ export function discover(name) {
   if(name==='ssh'&&process.platform==='win32')candidates.push('C:/Program Files/Git/usr/bin/ssh.exe');
   const lookup=spawnSync(process.platform==='win32'?'where.exe':'which',[name],{encoding:'utf8',windowsHide:true});
   candidates.push(...(lookup.stdout||'').trim().split(/\r?\n/).filter(Boolean));
-  const native=candidates.find(p=>existsSync(p)&&!/\.(cmd|bat|ps1)$/i.test(p));
+  const native=candidates.find(p=>existsSync(p)&&(process.platform==='win32'?/\.exe$/i.test(p):!/\.(cmd|bat|ps1)$/i.test(p)));
+  if(process.platform==='win32')return native || candidates.find(p=>existsSync(p)&&/\.(cmd|bat)$/i.test(p)) || name;
   return native || candidates.find(p=>existsSync(p)) || name;
 }
 
@@ -27,7 +29,7 @@ export function runProcess(file,args=[],{cwd,input='',signal,timeout=900000,onLi
     let program=file, argv=args;
     if(process.platform==='win32'&&/\.(cmd|bat)$/i.test(file)) {
       const b64=Buffer.from(JSON.stringify({file,args}),'utf8').toString('base64');
-      const ps=`$x = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')) | ConvertFrom-Json; & $x.file @($x.args); exit $LASTEXITCODE`;
+      const ps=`$ProgressPreference='SilentlyContinue'; $x = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')) | ConvertFrom-Json; & $x.file @($x.args); exit $LASTEXITCODE`;
       program='powershell.exe'; argv=['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(ps,'utf16le').toString('base64')];
     }
     const child=spawn(program,argv,{cwd,env,windowsHide:true,detached:process.platform!=='win32',stdio:['pipe','pipe','pipe']});
@@ -60,14 +62,21 @@ export const shellCommand=(command,opts={})=>process.platform==='win32'
 
 export const quotePosix=s=>"'"+String(s).replaceAll("'","'\\''")+"'";
 // No provider keys: reuse subscription/OAuth auth stored by the installed CLIs.
-export function subscriptionEnv() {const env={...process.env};for(const key of ['OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDECODE'])delete env[key];return env;}
+export function subscriptionEnv() {const env={...process.env};for(const key of ['OPENAI_API_KEY','CODEX_API_KEY','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDECODE','GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_GENAI_USE_VERTEXAI','KIMI_API_KEY','MOONSHOT_API_KEY'])delete env[key];return env;}
 
 export async function remoteProcess(ssh,file,args,opts={}) {
   if(!ssh?.target || !/^[a-zA-Z0-9_@.:[\]-]+$/.test(ssh.target)||ssh.target.startsWith('-'))throw new Error('Configura un alias SSH o usuario@host válido');
   const helper=`const{spawn}=require('child_process');let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const p=JSON.parse(s);const c=spawn(p.file,p.args,{cwd:p.cwd||undefined,env:process.env,stdio:['pipe','inherit','inherit']});c.stdin.on('error',()=>{});c.stdin.end(p.input||'');const t=setTimeout(()=>{c.kill('SIGTERM');setTimeout(()=>c.kill('SIGKILL'),1500).unref()},p.timeout);c.on('error',e=>{console.error(e.message);process.exitCode=1});c.on('close',n=>{clearTimeout(t);process.exit(n??1)});for(const sig of ['SIGTERM','SIGHUP','SIGINT'])process.on(sig,()=>c.kill('SIGTERM'))});`;
   const argsSsh=['-T','-o','BatchMode=yes','-o','ConnectTimeout=10'];
+  const remoteCommand=`${quotePosix(ssh.node||'node')} -e ${quotePosix(helper)}`;
+  const payload=JSON.stringify({file,args,cwd:opts.remoteCwd,input:opts.input,timeout:opts.timeout||900000});
+  if(ssh.password) {
+    const config=await runProcess(discover('ssh'),['-G',ssh.target],{timeout:10000,signal:opts.signal});
+    const resolved=Object.fromEntries(config.stdout.split(/\r?\n/).map(line=>{const i=line.indexOf(' ');return [line.slice(0,i),line.slice(i+1)]}));
+    return runPasswordSSH(passwordConnectionOptions(ssh,resolved),remoteCommand,{...opts,input:payload});
+  }
   if(ssh.port)argsSsh.push('-p',String(ssh.port)); if(ssh.identityFile)argsSsh.push('-i',ssh.identityFile);
   if(ssh.knownHostsFile)argsSsh.push('-o',`UserKnownHostsFile="${ssh.knownHostsFile.replaceAll('\\','/').replaceAll('"','\\"')}"`);
-  argsSsh.push(ssh.target,`${quotePosix(ssh.node||'node')} -e ${quotePosix(helper)}`);
-  return runProcess(discover('ssh'),argsSsh,{...opts,cwd:undefined,input:JSON.stringify({file,args,cwd:opts.remoteCwd,input:opts.input,timeout:opts.timeout||900000})});
+  argsSsh.push(ssh.target,remoteCommand);
+  return runProcess(discover('ssh'),argsSsh,{...opts,cwd:undefined,input:payload});
 }

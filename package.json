@@ -1,12 +1,35 @@
 {
   "name": "tria-orchestrator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local orchestration for Codex CLI, Claude Code and OpenClaw over SSH",
-  "repository": { "type": "git", "url": "git+https://github.com/CesarCabrera85/tria-orchestrator.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CesarCabrera85/tria-orchestrator.git"
+  },
   "type": "module",
-  "bin": { "tria": "bin/tria.mjs" },
-  "scripts": { "start": "node bin/tria.mjs start", "test": "node --test test/*.test.mjs", "check": "node --check src/server.mjs && node --check src/engine.mjs && node --check public/app.js" },
-  "engines": { "node": ">=22" },
-  "files": ["bin", "src", "public", "docs", "scripts", "ABRIR_TRIA.cmd", "README.md", "LICENSE"],
-  "license": "MIT"
+  "bin": {
+    "tria": "bin/tria.mjs"
+  },
+  "scripts": {
+    "start": "node bin/tria.mjs start",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/server.mjs && node --check src/engine.mjs && node --check public/app.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "bin",
+    "src",
+    "public",
+    "docs",
+    "scripts",
+    "ABRIR_TRIA.cmd",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ssh2": "^1.17.0"
+  }
 }

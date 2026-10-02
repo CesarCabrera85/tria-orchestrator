@@ -3,3 +3,6 @@ node_modules/
 *.tgz
 test-output/
 .env
+
+output/
+tmp/

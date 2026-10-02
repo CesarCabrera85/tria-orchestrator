@@ -8,6 +8,29 @@ import { Engine } from '../src/engine.mjs';
 import { defaultSettings, parseObject, textFromEvent } from '../src/agents.mjs';
 import { checked, runProcess, shellCommand } from '../src/process.mjs';
 import { createServer } from '../src/server.mjs';
+import { validateTeam } from '../src/providers.mjs';
+
+test('Gemini and Kimi share the plan, own tasks and review alongside Codex/Claude (fixture agents)',async()=>{
+ const f=await fixture(),calls=[],cfg=defaultSettings();cfg.team=['codex','claude','gemini','kimi'];f.store.write('settings.json',cfg);
+ const base=fakeAgent(calls);const engine=new Engine(f.store,{agentCall:async(a,p,o)=>{const result=await base(a,p,o);if(p.includes('acuerda un plan ejecutable')){const plan=JSON.parse(result);plan.tasks[0].owner='gemini';return JSON.stringify(plan)}return result}});
+ const r=engine.create({repository:f.repo,goal:'Build greeting with all four'});engine.start(r.id);await engine.jobs.get(r.id).promise;
+ const saved=f.store.run(r.id);assert.equal(saved.status,'completed',saved.error);assert.ok(calls.some(c=>c.agent==='gemini'&&c.prompt.includes('IMPLEMENTA la tarea')));assert.ok(calls.some(c=>c.agent==='kimi'&&c.prompt.includes('Revisa de forma independiente')));
+ for(const id of cfg.team)assert.equal(saved.steps['final_'+id],true);
+ assert.ok(calls.find(c=>c.prompt.includes('acuerda un plan ejecutable')).prompt.includes('kimi [debate]'));
+ assert.throws(()=>validateTeam(['codex','deepseek']));assert.throws(()=>validateTeam(['codex','codex']));
+});
+
+test('SSH password is session-only, never returned, preserved by empty save and explicitly clearable',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'tria-password-api-')),app=await createServer({dir,port:0});
+ const secret='test-only-&-$-secret';
+ const put=async cfg=>{const r=await fetch(app.url+'/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});assert.equal(r.status,200);assert.ok(!(await r.text()).includes(secret))};
+ try{let cfg=await(await fetch(app.url+'/api/settings')).json();cfg.ssh.password=secret;await put(cfg);
+ assert.equal(app.engine.settings().ssh.password,secret);assert.ok(!readFileSync(join(dir,'settings.json'),'utf8').includes(secret));
+ cfg=await(await fetch(app.url+'/api/settings')).json();assert.equal(cfg.ssh.hasPassword,true);assert.equal(cfg.ssh.password,undefined);
+ cfg.ssh.password='';await put(cfg);assert.equal(app.engine.settings().ssh.password,secret);
+ cfg.ssh.forgetPassword=true;await put(cfg);assert.equal(app.engine.settings().ssh.password,'');
+ }finally{await app.close()}
+});
 
 async function fixture(){const dir=mkdtempSync(join(tmpdir(),'tria-test-'));const repo=join(dir,'repo');mkdirSync(repo);await checked('git',['init','-b','main'],{cwd:repo});writeFileSync(join(repo,'README.md'),'Implement a greeting.');writeFileSync(join(repo,'check.mjs'),"import assert from 'node:assert/strict';import{readFileSync}from'node:fs';assert.equal(readFileSync('result.txt','utf8'),'hello');");await checked('git',['add','.'],{cwd:repo});await checked('git',['-c','user.name=Test','-c','user.email=test@localhost','commit','-m','fixture'],{cwd:repo});const store=new Store(join(dir,'state'));store.write('settings.json',defaultSettings());return {dir,repo,store};}
 function fakeAgent(log,{reviewFailOnce=false,verifyFailOnce=false,onTurn=()=>{}}={}){let reviewed=false;return async(agent,prompt,opts)=>{
