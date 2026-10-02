@@ -1,6 +1,6 @@
 {
   "name": "tria-orchestrator",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Local orchestration for Codex CLI, Claude Code and OpenClaw over SSH",
   "repository": {
     "type": "git",

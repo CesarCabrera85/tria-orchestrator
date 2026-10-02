@@ -139,6 +139,10 @@ export class Engine {
           .then(result=>{if(result.blocked!==false)throw new Error(result.summary||'El implementador está bloqueado');t.result=result});
         await this.checkpoint(r,`Tria: ${t.title}`,signal);t.implemented=true;this.persist(r);
       }
+      if(r.validationMode==='functional-final') {
+        t.review={deferred:true,summary:'Implementación terminada; pendiente de prueba funcional final de Luna.'};
+        t.status='completed';r.taskIndex++;this.persist(r);continue;
+      }
       r.phase='review';this.persist(r);const reviewer=reviewerFor(t.owner);
       const review=await this.turn(r,settings,signal,reviewer,`Revisa de forma independiente la tarea ${t.id}: ${t.title}. Criterio: ${t.acceptance}. Inspecciona el código y ejecuta pruebas si hace falta. No edites. Devuelve SOLO JSON {"approved":true,"summary":"...","issues":["problemas concretos que bloquean aceptación"]}. Si faltan integración o pruebas relevantes, approved debe ser false.`);
       if(review.approved!==true||!Array.isArray(review.issues)||review.issues.length) {
@@ -158,23 +162,27 @@ export class Engine {
       if(r.verification.every(v=>v.code===0)) {r.steps.verified=true;this.persist(r);break;}
       if(r.repairRound>=settings.maxRepairRounds)throw new Error('Las verificaciones siguen fallando. Consulta resultados y añade instrucciones para continuar.');
       r.repairRound++;r.phase='repair';this.persist(r);
-      const owner=team[r.repairRound%team.length];
+      const owner=r.validationMode==='functional-final'?'claude':team[r.repairRound%team.length];
       const repair=await this.turn(r,settings,signal,owner,`Corrige estos fallos reales sin desactivar ni debilitar las pruebas: ${JSON.stringify(r.verification)}. Devuelve SOLO JSON {"summary":"...","blocked":false}.`);
       if(repair.blocked!==false)throw new Error(repair.summary||'Reparación bloqueada');
       await this.checkpoint(r,'Tria: repair verification',signal);
     }
     // Final independent reviews are after fixes, never before the tested revision.
     if(!r.verifiedTree){await this.checkpoint(r,'Tria: verification checkpoint',signal);r.verifiedTree=(await this.git(r,['rev-parse','HEAD'],signal)).stdout.trim();this.persist(r);}
-    for(const agent of team)if(!r.steps[`final_${agent}`]) {
+    for(const agent of (r.validationMode==='functional-final'?['codex']:team))if(!r.steps[`final_${agent}`]) {
       r.phase='final-review';this.persist(r);
-      const v=await this.turn(r,settings,signal,agent,`Audita el resultado completo contra el objetivo del usuario, no solo el plan. No edites. Verificaciones ejecutadas por Tria: ${JSON.stringify(r.verification)}. Devuelve SOLO JSON {"approved":true,"summary":"...","issues":[]}. Si falta funcionalidad, no apruebes.`);
+      const finalInstruction=r.validationMode==='functional-final'
+        ? `Tu función es PROBAR LA APLICACIÓN FUNCIONANDO, no revisar todo el código ni repetir auditorías por tarea. Actúas como probador funcional con GPT-6-Luna. Arranca la aplicación en un entorno local aislado con datos sintéticos y prueba sus recorridos reales: acceso al panel, consulta de un pedido propio, rechazo de uno ajeno, pedido sin entrega confirmada, información desconocida y derivación a humano. Usa la interfaz y las herramientas de navegador disponibles; comprueba también las respuestas reales de la aplicación y la persistencia. No basta con leer código o dar por buenos los logs de Claude. No modifiques el código: entrega a Claude los fallos reproducibles. No despliegues ni actives WhatsApp, ni envíes mensajes externos. Distingue pruebas locales de una conversación real de WhatsApp, que queda pendiente de conexión y activación autorizadas. Si no puedes ejecutar un recorrido, indícalo como no probado. Verificaciones previas: ${JSON.stringify(r.verification)}. Devuelve SOLO JSON {"approved":true,"summary":"recorridos ejecutados, resultados y limitaciones","issues":[],"evidence":["comandos, URLs locales y resultados observados"]}. approved solo puede ser true cuando hayas probado los recorridos funcionales locales; si fallan o no puedes probarlos, false.`
+        : `Audita el resultado completo contra el objetivo del usuario, no solo el plan. No edites. Verificaciones ejecutadas por Tria: ${JSON.stringify(r.verification)}. Devuelve SOLO JSON {"approved":true,"summary":"...","issues":[]}. Si falta funcionalidad, no apruebes.`;
+      const v=await this.turn(r,settings,signal,agent,finalInstruction);
+      if(r.validationMode==='functional-final'){r.functionalTest=v;this.persist(r);}
       const currentHead=(await this.git(r,['rev-parse','HEAD'],signal)).stdout.trim();
       const currentChanges=(await this.git(r,['status','--porcelain'],signal)).stdout.trim();
       if(currentHead!==r.verifiedTree||currentChanges){r.steps.verified=false;for(const member of team)r.steps['final_'+member]=false;r.verifiedTree=null;this.persist(r);throw new Error('El código cambió durante la auditoría. Reanuda para volver a ejecutar las verificaciones sobre esos cambios.');}
       if(v.approved!==true||!Array.isArray(v.issues)||v.issues.length) {
         if(r.finalRepairs>=settings.maxRepairRounds)throw new Error(`Auditoría final de ${agent}: ${v.summary}`);
         r.finalRepairs=(r.finalRepairs||0)+1;
-        r.tasks.push({id:r.tasks.length+1,title:`Correcciones de auditoría (${agent})`,owner:reviewerFor(agent),instructions:JSON.stringify(v),acceptance:'Resolver los hallazgos de la auditoría sin eliminar comprobaciones',status:'pending'});
+        r.tasks.push({id:r.tasks.length+1,title:r.validationMode==='functional-final'?'Corregir fallos funcionales encontrados por Luna':`Correcciones de auditoría (${agent})`,owner:r.validationMode==='functional-final'?'claude':reviewerFor(agent),instructions:JSON.stringify(v),acceptance:'Resolver los fallos reproducibles sin eliminar comprobaciones',status:'pending'});
         r.steps.verified=false;for(const member of team)r.steps['final_'+member]=false;r.verifiedTree=null;this.persist(r);return this.execute(r,settings,signal);
       }
       r.steps[`final_${agent}`]=true;this.persist(r);

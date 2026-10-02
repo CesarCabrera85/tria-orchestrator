@@ -31,10 +31,12 @@ export function setupRunActivity(){
   let run,events=[],timer,pending;
   let state={active:null,agents:{}};
   function render(){if(!run)return;const cards=panel.querySelector('.worker-cards');cards.replaceChildren();
+    panel.querySelector('p.muted').textContent=run.validationMode==='functional-final'?'Claude desarrolla. Luna probará la aplicación funcionando al terminar; no revisa cada tarea.':'Trabajan por turnos: uno ejecuta y el otro espera o revisa. Una sesión iniciada no significa que esté trabajando.';
     for(const id of run.team||['codex','claude']){
       const card=document.createElement('div'),title=document.createElement('strong'),status=document.createElement('p'),detail=document.createElement('small');
       const active=state.active?.agent===id,a=state.agents[id];card.className='worker-card'+(active?' working':'');title.textContent=names[id]||id;
       status.textContent=active?'● Trabajando':run.status==='running'?'En espera de turno':['failed','paused','interrupted'].includes(run.status)?'Detenido':'Sin turno activo';
+      if(run.validationMode==='functional-final'&&id==='codex'){title.textContent='Codex · GPT-6-Luna';if(run.status==='running')status.textContent=active?'● Probando la aplicación':'En espera de la prueba funcional final';}
       detail.textContent=(a?.detail||'Sin actividad registrada')+(a?.at?' · Último evento hace '+Math.max(0,Math.floor((Date.now()-Date.parse(a.at))/1000))+' s':'');
       card.append(title,status,detail);cards.append(card);
     }

@@ -33,6 +33,21 @@ test('SSH password is session-only, never returned, preserved by empty save and 
 });
 
 async function fixture(){const dir=mkdtempSync(join(tmpdir(),'tria-test-'));const repo=join(dir,'repo');mkdirSync(repo);await checked('git',['init','-b','main'],{cwd:repo});writeFileSync(join(repo,'README.md'),'Implement a greeting.');writeFileSync(join(repo,'check.mjs'),"import assert from 'node:assert/strict';import{readFileSync}from'node:fs';assert.equal(readFileSync('result.txt','utf8'),'hello');");await checked('git',['add','.'],{cwd:repo});await checked('git',['-c','user.name=Test','-c','user.email=test@localhost','commit','-m','fixture'],{cwd:repo});const store=new Store(join(dir,'state'));store.write('settings.json',defaultSettings());return {dir,repo,store};}
+test('functional mode gives Claude implementation and repairs, Codex only final functional testing',async()=>{
+ const f=await fixture(),calls=[],base=fakeAgent([]);let functionalTests=0;
+ const engine=new Engine(f.store,{agentCall:async(a,p,o)=>{
+  calls.push({agent:a,prompt:p});
+  if(p.includes('PROBAR LA APLICACIÓN FUNCIONANDO')){functionalTests++;return JSON.stringify({approved:functionalTests>1,summary:'Functional exercise',issues:functionalTests===1?['A real user flow failed']:[],evidence:['Executed local app']});}
+  const value=await base(a,p,o);if(p.includes('acuerda un plan ejecutable')){const v=JSON.parse(value);v.tasks[0].owner='claude';return JSON.stringify(v)}return value;
+ }});
+ const r=engine.create({repository:f.repo,goal:'Build greeting'});r.validationMode='functional-final';f.store.save(r);
+ engine.start(r.id);await engine.jobs.get(r.id).promise;
+ const saved=f.store.run(r.id);assert.equal(saved.status,'completed',saved.error);assert.equal(functionalTests,2);
+ assert.equal(calls.filter(c=>c.prompt.includes('Revisa de forma independiente la tarea')).length,0);
+ assert.ok(calls.filter(c=>c.prompt.includes('IMPLEMENTA la tarea')).every(c=>c.agent==='claude'));
+ assert.ok(calls.filter(c=>c.prompt.includes('PROBAR LA APLICACIÓN FUNCIONANDO')).every(c=>c.agent==='codex'));
+ assert.equal(saved.functionalTest.approved,true);assert.equal(saved.tasks[0].review.deferred,true);
+});
 test('malformed structured reply retries once and emits real turn end events',async()=>{
  const f=await fixture();let attempts=0;const base=fakeAgent([]);
  const engine=new Engine(f.store,{agentCall:async(a,p,o)=>{if(p.includes('IMPLEMENTA la tarea')&&attempts++===0)return 'Todavía pendiente';return base(a,p,o)}});
