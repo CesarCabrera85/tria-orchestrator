@@ -17,7 +17,7 @@ Fecha: 2 de octubre de 2026. Entorno real: Windows, Node.js 24.18.0, npm 11.16.0
 
 - Ejecución real conjunta de Codex y Claude: requiere terminar el login de Claude. Las pruebas de fixture verifican el motor, no sustituyen esta prueba con ambos proveedores.
 - Consulta real a OpenClaw y despliegue en el servidor: SSH rechaza todavía la clave y faltan los datos reales del proyecto y comandos del servidor. No se ha cambiado ni reiniciado ningún servicio remoto.
-- Publicación en una cuenta GitHub o en el registro npm. El repositorio Git local y el paquete npm son entregables locales; no implican publicación externa.
+- Publicación en el registro npm: no se ha realizado. La distribución inicial utiliza instalación npm desde GitHub o desde el paquete `.tgz`.
 - Linux/macOS, instalación como servicio, edición paralela, recuperación automática de despliegues y funcionamiento multiusuario.
 
 ## Alcance de las comprobaciones

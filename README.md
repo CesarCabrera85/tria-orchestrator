@@ -8,7 +8,15 @@ Tria utiliza los ejecutables y las sesiones existentes. No contiene SDK de infer
 
 Requiere **Node.js 22 o superior**, Git, Codex CLI y Claude Code autenticados en el mismo usuario que ejecuta Tria. SSH y Node remoto son necesarios para OpenClaw/despliegues. Los agentes de construcción se ejecutan en la máquina de Tria; pueden coexistir con OpenClaw allí o conectarse a él por SSH.
 
-El paquete todavía no está publicado en el registro npm. Desde este repositorio:
+El paquete todavía no está publicado en el registro npm. Puedes instalarlo con npm directamente desde GitHub:
+
+```sh
+npm install -g git+https://github.com/CesarCabrera85/tria-orchestrator.git
+tria doctor
+tria start
+```
+
+O desde un clon local de este repositorio:
 
 ```sh
 npm install -g .

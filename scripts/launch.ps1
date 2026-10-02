@@ -1,14 +1,15 @@
+param([int]$Port = 4310, [string]$DataDir = '.tria')
 $ErrorActionPreference = 'Stop'
 $triaRoot = Split-Path -Parent $PSScriptRoot
-$triaData = Join-Path $triaRoot '.tria'
-$triaUrl = 'http://127.0.0.1:4310'
+$triaData = Join-Path $triaRoot $DataDir
+$triaUrl = "http://127.0.0.1:$Port"
 try {
     $response = Invoke-WebRequest -Uri "$triaUrl/api/settings" -UseBasicParsing -TimeoutSec 2
     if ($response.StatusCode -eq 200) { Start-Process $triaUrl; exit 0 }
 } catch {}
 New-Item -ItemType Directory -Force -Path $triaData | Out-Null
 $triaNode = (Get-Command node.exe).Source
-Start-Process -FilePath $triaNode -ArgumentList @('bin/tria.mjs','start','--data','.tria') -WorkingDirectory $triaRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $triaData 'server.stdout.log') -RedirectStandardError (Join-Path $triaData 'server.stderr.log')
+Start-Process -FilePath $triaNode -ArgumentList @('bin/tria.mjs','start','--data',('"' + $triaData + '"'),'--port',"$Port") -WorkingDirectory $triaRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $triaData 'server.stdout.log') -RedirectStandardError (Join-Path $triaData 'server.stderr.log')
 for ($triaAttempt = 0; $triaAttempt -lt 30; $triaAttempt++) {
     try {
         $response = Invoke-WebRequest -Uri "$triaUrl/api/settings" -UseBasicParsing -TimeoutSec 1
