@@ -10,6 +10,7 @@ Fecha: 2 de octubre de 2026. Entorno real: Windows, Node.js 24.18.0, npm 11.16.0
 - Codex CLI 0.159.0-alpha.12.1 está autenticado mediante ChatGPT. Una llamada real a través del adaptador de Tria devolvió `{"connected":true,"provider":"codex-cli"}`. No se configuró una API key.
 - Segunda prueba real de Codex: creó `greeting.mjs` y `check.mjs` en un repositorio temporal y ejecutó la prueba. Tria ejecutó de nuevo `node check.mjs` de forma independiente, con salida 0. Se comprobó el código generado, no solo el informe del agente.
 - Paquete generado con `npm pack` e instalado con `npm install -g ./tria-orchestrator-0.1.0.tgz`; comandos `tria help` y `tria doctor` ejecutados desde la instalación global. El paquete excluye configuración, claves, historiales y repositorios de trabajo locales.
+- Repositorio público publicado en `https://github.com/CesarCabrera85/tria-orchestrator`. Instalación directa con `npm install -g git+https://github.com/CesarCabrera85/tria-orchestrator.git` completada y `tria help` comprobado después. La instancia de comprobación del paquete se abrió en el puerto 4311 con un directorio de datos independiente.
 - Claude Code 2.1.207 fue localizado como ejecutable nativo; su comando `auth status` devolvió `loggedIn: false`. Se abrió su flujo de login de suscripción.
 - El servidor del usuario responde a SSH por su IP de LAN y su huella ED25519 coincide con la aportada por el usuario. El nombre mDNS `.local` no se resolvió desde este Windows. Se generó una clave dedicada a Tria; su autorización remota está pendiente.
 
