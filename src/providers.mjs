@@ -26,7 +26,7 @@ export async function loginProvider(id,settings){
   const script=`Set-Location ${psQuote(tmpdir())}; & ${instruction}`;
   const child=spawn('powershell.exe',['-NoLogo','-NoProfile','-NoExit','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{detached:true,windowsHide:false,stdio:'ignore',env:subscriptionEnv()});
   await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject)});child.unref();
-  return {launched:true,detail:'Se abrió una terminal de inicio de sesión en este ordenador. Completa la autorización del proveedor y pulsa Probar cuenta.'};
+  return {launched:true,detail:'Se solicitó abrir una terminal en el ordenador que ejecuta Tria. Completa la autorización del proveedor y pulsa Probar cuenta. Si no aparece, ejecuta allí: '+instruction};
 }
 export async function probeProvider(id,settings){
   if(!providerIds.includes(id))throw new Error('Proveedor sin conector de cuenta');

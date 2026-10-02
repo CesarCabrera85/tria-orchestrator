@@ -8,6 +8,7 @@ import { Engine } from './engine.mjs';
 import { defaultSettings } from './agents.mjs';
 import { runProcess, remoteProcess, subscriptionEnv } from './process.mjs';
 import { providerIds, teamFor, validateTeam, loginProvider, probeProvider } from './providers.mjs';
+import { ClaudeLogin } from './claude-login.mjs';
 
 const publicDir=fileURLToPath(new URL('../public/',import.meta.url));
 function json(res,code,data){res.writeHead(code,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));}
@@ -32,6 +33,7 @@ export async function createServer({dir,host='127.0.0.1',port=4310,token='',agen
   for(const id of providerIds)saved[id]={...defaults[id],...saved[id]};
   saved.team=validateTeam(teamFor(saved));delete saved.ssh.password;store.write('settings.json',saved);
   let sshPassword='';
+  const claudeLogin = new ClaudeLogin();
   const publicSettings=()=>{const s=store.read('settings.json');delete s.ssh.password;s.ssh.hasPassword=!!sshPassword;return s;};
   const engine=new Engine(store,{agentCall,settingsProvider:()=>{const s=store.read('settings.json');s.ssh.password=sshPassword;return s}}); const clients=new Set();
   const server=http.createServer(async(req,res)=>{
@@ -61,10 +63,17 @@ export async function createServer({dir,host='127.0.0.1',port=4310,token='',agen
           store.write('settings.json',{...prev,...value});return json(res,200,{ok:true,hasPassword:!!sshPassword});
         }
         if(path==='/api/doctor'&&req.method==='GET')return json(res,200,await doctor(engine.settings()));
+        if(path==='/api/providers/claude/login'&&req.method==='GET')return json(res,200,claudeLogin.snapshot());
+        if(path==='/api/providers/claude/login-cancel'&&req.method==='POST'){claudeLogin.close();return json(res,200,claudeLogin.snapshot());}
+        if(path==='/api/providers/claude/login-code'&&req.method==='POST'){
+          if(engine.jobs.size)throw new Error('Detén las ejecuciones antes de cambiar cuentas.');
+          const data=await body(req);return json(res,200,claudeLogin.submit(data.sessionId,data.code));
+        }
         const providerRoute=path.match(/^\/api\/providers\/(codex|claude|gemini|kimi)\/(login|probe)$/);
         if(providerRoute&&req.method==='POST'){
           if(engine.jobs.size)throw new Error('Detén las ejecuciones antes de cambiar o comprobar cuentas.');
           const [,id,action]=providerRoute;
+          if(id==='claude'&&action==='login')return json(res,200,await claudeLogin.start(engine.settings().claude.command));
           return json(res,200,await(action==='login'?loginProvider(id,engine.settings()):probeProvider(id,engine.settings())));
         }
         if(path==='/api/ssh/check'&&req.method==='POST') {
@@ -100,11 +109,11 @@ export async function createServer({dir,host='127.0.0.1',port=4310,token='',agen
         }
         return json(res,404,{error:'Ruta no encontrada'});
       }
-      const files={'/':['index.html','text/html'],'/app.js':['app.js','text/javascript'],'/style.css':['style.css','text/css']};
+      const files={'/':['index.html','text/html'],'/app.js':['app.js','text/javascript'],'/claude-login.js':['claude-login.js','text/javascript'],'/style.css':['style.css','text/css']};
       if(files[path]){const [file,type]=files[path];res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'");res.writeHead(200,{'Content-Type':type+'; charset=utf-8'});return res.end(readFileSync(join(publicDir,file)));}
       res.writeHead(404);res.end('Not found');
     } catch(e){if(!res.headersSent)json(res,400,{error:e.message});else res.end();}
   });
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,host,resolve)});
-  return {server,store,engine,url:`http://${host}:${server.address().port}`,close:async()=>{await engine.stop();for(const c of clients)c.end();server.closeIdleConnections();await new Promise(resolve=>server.close(resolve));}};
+  return {server,store,engine,url:`http://${host}:${server.address().port}`,close:async()=>{claudeLogin.close();await engine.stop();for(const c of clients)c.end();server.closeIdleConnections();await new Promise(resolve=>server.close(resolve));}};
 }
