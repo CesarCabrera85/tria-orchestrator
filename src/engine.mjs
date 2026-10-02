@@ -34,6 +34,16 @@ export class Engine {
     return r;
   }
   pause(id){const j=this.jobs.get(id);if(!j)throw new Error('La ejecución no está activa');j.controller.abort();return {status:'pausing'};}
+  async instruct(id,text,now=false){
+    const job=this.jobs.get(id);
+    if(job?.steering)throw new Error('Ya se está aplicando una orden. Espera a que termine.');
+    const r=this.message(id,text);
+    if(!now)return {detail:'Orden guardada. Se incorporará al siguiente turno; si está detenido, pulsa Iniciar / Reanudar.'};
+    if(['completed','deployed'].includes(r.status))return {detail:'Orden guardada. Esta ejecución ya terminó; crea otra ejecución para ampliar el objetivo.'};
+    if(job){job.steering=true;job.controller.abort();await job.promise;}
+    this.start(id);
+    return {detail:'Orden guardada y ejecución retomada. El nuevo turno recibe tu instrucción.'};
+  }
   message(id,text){if(typeof text!=='string'||!text.trim())throw new Error('Mensaje vacío');const r=this.store.run(id);if(this.jobs.get(id)?.maintenance)throw new Error('Espera a que finalice la publicación o el despliegue');r.messages.push({at:new Date().toISOString(),text:text.trim()});this.store.save(r);this.log(r,'user',{text:text.trim()});return r;}
   syncMessages(r){r.messages=this.store.run(r.id).messages;}
   async git(r,args,signal){return checked('git',args,{cwd:r.workspace,signal,env:{...process.env,GIT_TERMINAL_PROMPT:'0',GCM_INTERACTIVE:'never'},onLine:(channel,text)=>this.log(r,'command',{label:'git',channel,text})});}
@@ -49,12 +59,24 @@ export class Engine {
     return `Eres miembro de Tria, equipo ${r.team?.join(' + ')||'Codex + Claude'} con OpenClaw opcional, dirigido por el usuario.\nOBJETIVO: ${r.goal}\nREPOSITORIO: ${r.repository}\nCOPIA DE TRABAJO: ${r.workspace}\nRAMA: ${r.branch}\nLee AGENTS.md, CLAUDE.md, README y los .md pertinentes. Inspecciona código real. No declares algo probado sin ejecutarlo. Implementa resultados funcionales; no sustituyas integraciones por mocks. No hagas push, merge, despliegue ni cambies de rama: los gestiona Tria. No accedas a las credenciales. El usuario decide los permisos en la configuración.\nINSTRUCCIONES DEL USUARIO: ${JSON.stringify(r.messages)}\nPLAN: ${JSON.stringify(r.tasks)}\nCONVERSACIÓN COMPARTIDA (últimos turnos):\n${r.transcript.slice(-10).map(t=>`${t.agent} [${t.phase}]: ${t.text.slice(-16000)}`).join('\n\n')}`;
   }
   async turn(r,settings,signal,agent,instruction,structured=true) {
-    const prompt=this.context(r)+'\n\nTU ENCARGO AHORA:\n'+instruction;
-    this.log(r,'dispatch',{agent,phase:r.phase,prompt});
-    const text=await this.agentCall(agent,prompt,{settings,cwd:r.workspace,signal,sessionId:r.openclawSession,onEvent:data=>this.log(r,'agent_event',data)});
-    r.transcript.push({agent,phase:r.phase,text,at:new Date().toISOString()});
-    this.syncMessages(r);this.store.save(r);this.log(r,'message',{agent,phase:r.phase,text});
-    return structured?parseObject(text):text;
+    let prompt=this.context(r)+'\n\nTU ENCARGO AHORA:\n'+instruction+'\nEsta es una ejecución no interactiva. No termines el turno con trabajos pendientes ni esperes notificaciones después de responder. Ejecuta y espera las pruebas en primer plano, con un tiempo límite. Si no puedes terminar, informa del bloqueo real; no declares éxito ni evidencia pendiente. Reutiliza resultados y cambios existentes sin repetir trabajo ya comprobado.';
+    const outputSchema=structured ? (r.phase==='plan' ? {type:'object',properties:{summary:{type:'string'},tasks:{type:'array',items:{type:'object',properties:{title:{type:'string'},owner:{type:'string',enum:r.team},instructions:{type:'string'},acceptance:{type:'string'}},required:['title','owner','instructions','acceptance']}},verificationCommands:{type:'array',items:{type:'string'}}},required:['summary','tasks','verificationCommands']} : ['review','final-review'].includes(r.phase) ? {type:'object',properties:{approved:{type:'boolean'},summary:{type:'string'},issues:{type:'array',items:{type:'string'}}},required:['approved','summary','issues']} : {type:'object',properties:{summary:{type:'string'},blocked:{type:'boolean'},evidence:{type:'array',items:{type:'string'}}},required:['summary','blocked']}) : undefined;
+    for(let attempt=0;attempt<2;attempt++) {
+      this.log(r,'dispatch',{agent,phase:r.phase,prompt,attempt});
+      let outcome='failed';
+      try {
+        const text=await this.agentCall(agent,prompt,{settings,cwd:r.workspace,signal,sessionId:r.openclawSession,outputSchema,onEvent:data=>this.log(r,'agent_event',data)});
+        r.transcript.push({agent,phase:r.phase,text,at:new Date().toISOString()});
+        this.syncMessages(r);this.store.save(r);this.log(r,'message',{agent,phase:r.phase,text});
+        if(!structured){outcome='completed';return text;}
+        try {const result=parseObject(text);outcome='completed';return result;}
+        catch(error){
+          if(attempt||signal.aborted)throw error;
+          outcome='retry';this.log(r,'warning',{agent,message:'Respuesta sin el JSON requerido. Se solicita una corrección, sin dar la tarea por terminada.'});
+          prompt+='\n\nTu respuesta anterior no cumplió el formato: '+text.slice(-16000)+'\nComprueba el estado real de lo pendiente, no repitas cambios ya hechos. Termina las comprobaciones o declara blocked:true con el motivo. Devuelve únicamente el JSON solicitado en el encargo original.';
+        }
+      } finally {this.log(r,'turn_end',{agent,phase:r.phase,outcome});}
+    }
   }
   async execute(r,settings,signal) {
     const team=r.team||['codex','claude'],lead=team[0],peer=team[1];

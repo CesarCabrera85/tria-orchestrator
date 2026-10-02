@@ -33,6 +33,21 @@ test('SSH password is session-only, never returned, preserved by empty save and 
 });
 
 async function fixture(){const dir=mkdtempSync(join(tmpdir(),'tria-test-'));const repo=join(dir,'repo');mkdirSync(repo);await checked('git',['init','-b','main'],{cwd:repo});writeFileSync(join(repo,'README.md'),'Implement a greeting.');writeFileSync(join(repo,'check.mjs'),"import assert from 'node:assert/strict';import{readFileSync}from'node:fs';assert.equal(readFileSync('result.txt','utf8'),'hello');");await checked('git',['add','.'],{cwd:repo});await checked('git',['-c','user.name=Test','-c','user.email=test@localhost','commit','-m','fixture'],{cwd:repo});const store=new Store(join(dir,'state'));store.write('settings.json',defaultSettings());return {dir,repo,store};}
+test('malformed structured reply retries once and emits real turn end events',async()=>{
+ const f=await fixture();let attempts=0;const base=fakeAgent([]);
+ const engine=new Engine(f.store,{agentCall:async(a,p,o)=>{if(p.includes('IMPLEMENTA la tarea')&&attempts++===0)return 'Todavía pendiente';return base(a,p,o)}});
+ const r=engine.create({repository:f.repo,goal:'Build greeting'});engine.start(r.id);await engine.jobs.get(r.id).promise;
+ assert.equal(f.store.run(r.id).status,'completed');assert.equal(attempts,2);
+ assert.ok(f.store.events(r.id).some(e=>e.type==='turn_end'&&e.outcome==='retry'));
+});
+test('apply now interrupts current turn, preserves changes and delivers instruction on resumed turn',async()=>{
+ const f=await fixture();let entered;const started=new Promise(resolve=>entered=resolve);let first=true;const calls=[],base=fakeAgent(calls);
+ const engine=new Engine(f.store,{agentCall:async(a,p,o)=>{if(p.includes('IMPLEMENTA la tarea')&&first){first=false;writeFileSync(join(o.cwd,'partial.txt'),'keep');entered();await new Promise((resolve,reject)=>o.signal.addEventListener('abort',()=>reject(new Error('stopped')),{once:true}));}return base(a,p,o)}});
+ const r=engine.create({repository:f.repo,goal:'Build greeting'});engine.start(r.id);await started;
+ await engine.instruct(r.id,'Conserva el trabajo parcial',true);await engine.jobs.get(r.id).promise;
+ assert.equal(f.store.run(r.id).status,'completed');assert.equal(readFileSync(join(f.store.run(r.id).workspace,'partial.txt'),'utf8'),'keep');
+ assert.ok(calls.some(c=>c.prompt.includes('IMPLEMENTA la tarea')&&c.prompt.includes('Conserva el trabajo parcial')));
+});
 function fakeAgent(log,{reviewFailOnce=false,verifyFailOnce=false,onTurn=()=>{}}={}){let reviewed=false;return async(agent,prompt,opts)=>{
  log.push({agent,prompt,cwd:opts.cwd});onTurn(agent,prompt,opts);
  if(prompt.includes('acuerda un plan ejecutable'))return JSON.stringify({summary:'Build greeting',tasks:[{title:'Greeting',owner:'codex',instructions:'Create result.txt',acceptance:'Contains hello'}],verificationCommands:['node check.mjs']});

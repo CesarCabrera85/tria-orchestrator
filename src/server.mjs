@@ -103,13 +103,14 @@ export async function createServer({dir,host='127.0.0.1',port=4310,token='',agen
             }
             if(action==='pause')return json(res,202,engine.pause(id));
             if(action==='message')return json(res,200,engine.message(id,data.text));
+            if(action==='instruct')return json(res,200,await engine.instruct(id,data.text,data.now===true));
             if(action==='publish')return json(res,200,await engine.publish(id));
             if(action==='deploy')return json(res,200,await engine.deploy(id,data));
           }
         }
         return json(res,404,{error:'Ruta no encontrada'});
       }
-      const files={'/':['index.html','text/html'],'/app.js':['app.js','text/javascript'],'/claude-login.js':['claude-login.js','text/javascript'],'/style.css':['style.css','text/css']};
+      const files={'/':['index.html','text/html'],'/app.js':['app.js','text/javascript'],'/run-activity.js':['run-activity.js','text/javascript'],'/claude-login.js':['claude-login.js','text/javascript'],'/style.css':['style.css','text/css']};
       if(files[path]){const [file,type]=files[path];res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'");res.writeHead(200,{'Content-Type':type+'; charset=utf-8'});return res.end(readFileSync(join(publicDir,file)));}
       res.writeHead(404);res.end('Not found');
     } catch(e){if(!res.headersSent)json(res,400,{error:e.message});else res.end();}

@@ -121,3 +121,11 @@ El directorio de datos contiene configuración, clones, ejecuciones y conversaci
 Consulta [docs/VALIDACION.md](docs/VALIDACION.md). Las pruebas de integración usan agentes de fixture claramente identificados para verificar el motor con Git y procesos reales. Una prueba de fixture no demuestra que una cuenta de Claude esté autenticada o que un servidor SSH sea accesible. Esas conexiones se comprueban por separado.
 
 Referencias de integración: [Codex no interactivo](https://learn.chatgpt.com/docs/non-interactive-mode), [Claude Code programático](https://code.claude.com/docs/en/headless), [CLI de OpenClaw](https://docs.openclaw.ai/cli/agent).
+
+### Ver agentes y enviar órdenes
+
+Dentro de cada ejecución, **Actividad del equipo** distingue el agente trabajando de los que esperan. Muestra la última herramienta o comando recibido, el tiempo desde el último evento y la tarea actual. Ese contador mide mensajes recibidos; no estima cuánto falta. Si el trabajo falla o se detiene, las tarjetas dejan de mostrar un agente activo.
+
+El cuadro de órdenes está antes de la conversación. **Enviar al siguiente turno** conserva la instrucción sin cortar el trabajo actual. **Aplicar ahora** interrumpe el turno, conserva los cambios y lo retoma incorporando la nueva orden. También reanuda una ejecución detenida. La confirmación aparece debajo del cuadro; los mensajes quedan en el historial. Una ejecución ya finalizada requiere otra ejecución para un nuevo objetivo.
+
+Los agentes trabajan por turnos y se revisan entre sí. Claude se ejecuta con tareas en primer plano y salida estructurada para que no cierre su proceso dejando comprobaciones pendientes. Véase la [variable oficial de control de tareas en segundo plano](https://code.claude.com/docs/en/env-vars#claude-code-disable-background-tasks).

@@ -31,7 +31,7 @@ export function textFromEvent(agent,event) {
   return '';
 }
 
-export async function callAgent(agent,prompt,{settings,cwd,signal,onEvent=()=>{},sessionId}={}) {
+export async function callAgent(agent,prompt,{settings,cwd,signal,onEvent=()=>{},sessionId,outputSchema}={}) {
   const cfg=settings[agent]; const timeout=settings.turnTimeoutMinutes*60000;
   let args, final='', protocolError='';
   if(agent==='codex') {
@@ -39,6 +39,7 @@ export async function callAgent(agent,prompt,{settings,cwd,signal,onEvent=()=>{}
     if(cfg.model) args.push('--model',cfg.model);
   } else if(agent==='claude') {
     args=['-p','--output-format','stream-json','--verbose','--include-partial-messages'];
+    if(outputSchema)args.push('--json-schema',JSON.stringify(outputSchema));
     if(cfg.access==='full')args.push('--dangerously-skip-permissions');else args.push('--permission-mode','acceptEdits');
     if(cfg.model)args.push('--model',cfg.model);
   } else if(agent==='openclaw') {
@@ -57,6 +58,7 @@ export async function callAgent(agent,prompt,{settings,cwd,signal,onEvent=()=>{}
       onEvent({agent,channel,event});
     }else onEvent({agent,channel,text:line});
   }};
+  if(agent==='claude')opts.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS='1';
   if(agent==='kimi')opts.input=JSON.stringify({prompt,model:cfg.model});
   const result=agent==='openclaw' ? await remoteProcess(settings.ssh,cfg.command,args,opts) : await runProcess(agent==='kimi'?process.execPath:cfg.command,args,opts);
   if(agent==='gemini'&&result.code!==0){try{protocolError=parseObject(result.stdout).error?.message||''}catch{}}
